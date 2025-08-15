@@ -1,3 +1,4 @@
+pip==25.2
 python-telegram-bot[job-queue]
 mcstatus
 uvicorn
