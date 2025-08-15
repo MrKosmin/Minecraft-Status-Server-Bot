@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8274163476:AAEWiqVBsOnYl2Rp2t-Jrz-2nJMDjDKyij4"
 SERVER_ADDRESS = "arm.ichtlay.cc"
 SERVER_PORT = 25565
-URL = os.environ.get("RENDER_EXTERNAL_URL")  # Render надає URL сервісу
-PORT = int(os.environ.get("PORT", 8000))  # Порт із змінної середовища, за замовчуванням 8000
+URL = os.environ.get("RENDER_EXTERNAL_URL")
+PORT = int(os.environ.get("PORT", 8000))
 
 class MinecraftServerMonitor:
     def __init__(self, server_address: str, server_port: int = 25565):
@@ -65,6 +65,15 @@ class MinecraftServerMonitor:
             players_list = []
             if status.players.sample:
                 players_list = [player.name for player in status.players.sample]
+                logger.info(f"Отримано список гравців через status: {players_list}")
+            else:
+                logger.info("status.players.sample порожній, пробуємо Query")
+                try:
+                    query = await asyncio.to_thread(self.server.query)
+                    players_list = query.players.names
+                    logger.info(f"Отримано список гравців через query: {players_list}")
+                except Exception as e:
+                    logger.error(f"Query недоступний: {e}")
             
             return {
                 'online': True,
@@ -73,16 +82,19 @@ class MinecraftServerMonitor:
                 'players_list': players_list
             }
         except Exception as e:
-            logging.error(f"Помилка при отриманні статусу сервера: {e}")
+            logger.error(f"Помилка при отриманні статусу сервера: {e}")
             return {'online': False, 'error': str(e)}
     
     async def check_player_changes(self, bot):
         """Перевіряє зміни в списку гравців"""
+        logger.info(f"Перевірка змін гравців. Чати для моніторингу: {self.monitoring_chats}")
         status = await self.get_server_status()
         if not status['online']:
+            logger.info("Сервер офлайн, пропускаємо перевірку")
             return
         
         current_players = set(status['players_list'])
+        logger.info(f"Поточні гравці: {current_players}, Попередні гравці: {self.previous_players}")
         
         # Нові гравці (зайшли)
         joined_players = current_players - self.previous_players
@@ -94,13 +106,15 @@ class MinecraftServerMonitor:
             try:
                 for player in joined_players:
                     message = f"🟢 {player} зайшов на сервер\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    logger.info(f"Надсилаємо повідомлення в чат {chat_id}: {message}")
                     await bot.send_message(chat_id=chat_id, text=message)
                 
                 for player in left_players:
                     message = f"🔴 {player} покинув сервер\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    logger.info(f"Надсилаємо повідомлення в чат {chat_id}: {message}")
                     await bot.send_message(chat_id=chat_id, text=message)
             except Exception as e:
-                logging.error(f"Помилка при відправці повідомлення в чат {chat_id}: {e}")
+                logger.error(f"Помилка при відправці повідомлення в чат {chat_id}: {e}")
         
         self.previous_players = current_players
         self.save_data()
@@ -111,9 +125,9 @@ monitor = MinecraftServerMonitor(SERVER_ADDRESS, SERVER_PORT)
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /status - Виводить статус сервера з кнопкою оновлення"""
     chat_id = update.effective_chat.id
-    # Автоматично увімкнути моніторинг для цього чату
     monitor.monitoring_chats.add(chat_id)
     monitor.save_data()
+    logger.info(f"Додано чат {chat_id} до моніторингу")
     
     message = await get_status_message()
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Оновити", callback_data='update_status')]])
@@ -128,7 +142,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'update_status':
         message = await get_status_message()
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Оновити", callback_data='update_status')]])
-        
         await query.edit_message_text(text=message, reply_markup=keyboard)
 
 async def get_status_message():
@@ -153,6 +166,7 @@ async def get_status_message():
 
 async def periodic_job(context: ContextTypes.DEFAULT_TYPE):
     """Періодична перевірка змін гравців"""
+    logger.info("Запуск періодичної перевірки гравців")
     await monitor.check_player_changes(context.bot)
 
 async def telegram(request: Request) -> Response:
@@ -188,6 +202,7 @@ async def main():
     application.add_handler(CallbackQueryHandler(button))
     
     # Налаштування вебхука
+    logger.info(f"Налаштування вебхука: {URL}/telegram")
     await application.bot.set_webhook(url=f"{URL}/telegram", allowed_updates=Update.ALL_TYPES)
     
     # Періодична задача (кожні 10 секунд)
@@ -202,7 +217,7 @@ async def main():
                 app=starlette_app,
                 port=PORT,
                 use_colors=False,
-                host="0.0.0.0"  # Render вимагає прив’язку до всіх IP
+                host="0.0.0.0"
             )
         ).serve()
         await application.stop()
